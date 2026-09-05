@@ -1,0 +1,17 @@
+# Secrets / local config
+.env
+
+# Data (dataset.json is 1.3 GB — keep it out of git)
+data/*.json
+!data/dataset-sample.json
+
+# Trained model artifacts
+models/*.joblib
+
+# Python
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ipynb_checkpoints/
