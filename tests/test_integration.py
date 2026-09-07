@@ -379,3 +379,50 @@ def test_facet_totals_match_a_live_count(client, method, param, values):
                 text(f"SELECT count(*) FROM tracks WHERE {column}"), {"v": value}
             ).scalar_one()
         assert reported == actual, f"{method}={value}"
+
+
+@needs_db
+@pytest.mark.parametrize("match,order", [
+    ("track ILIKE :pattern", "length(track) ASC"),
+    (":track ILIKE CONCAT('%', track, '%')", "length(track) DESC"),
+])
+def test_find_track_both_passes_are_narrowed_by_the_artist_index(match, order):
+    """The reverse pass has an unindexable track predicate by design.
+
+    `:track ILIKE CONCAT('%', track, '%')` puts the column on the pattern side,
+    so nothing can index it — and nothing needs to, because _ARTIST_MATCH
+    narrows the scan to one artist first and filtering those is free. That only
+    holds while *every* branch of the artist OR is index-servable; when one
+    branch was `= ANY(...)` instead of `@>`, PostgreSQL could use neither and
+    the reverse pass became a 402 ms scan of all 498k rows.
+    """
+    name = "here comes - New Release"
+    plan = _plan_for(
+        f"SELECT {repository._select_list(False)} FROM tracks "
+        f"WHERE {match} AND {repository._ARTIST_MATCH} "
+        f"ORDER BY {order}, popularity DESC NULLS LAST, id LIMIT 1",
+        {"track": name, "pattern": f"%{name}%", "artist": "inxs"},
+    )
+    assert "Seq Scan on tracks" not in plan, plan
+
+
+@needs_db
+def test_artist_match_uses_both_or_branches_under_a_bitmap_or():
+    """Both branches indexable is the whole point — assert both are in the plan.
+
+    A plan that used only one would still be correct and still be fast here;
+    it would just mean the other branch had silently stopped being servable.
+    """
+    plan = _plan_for(
+        f"SELECT id FROM tracks WHERE {repository._ARTIST_MATCH}", {"artist": "inxs"}
+    )
+    assert "tracks_artist_lower_idx" in plan, plan
+    assert "tracks_artist_members_gin_idx" in plan, plan
+
+
+@needs_db
+def test_reverse_match_resolves_a_title_the_query_string_contains():
+    """The behaviour the reverse pass exists for: stored title inside the query."""
+    found = repository.find_track("inxs", "here comes - New Release")
+    assert found is not None
+    assert found["track"].lower() in "here comes - new release"

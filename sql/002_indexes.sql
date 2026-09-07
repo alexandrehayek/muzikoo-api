@@ -1,9 +1,35 @@
 -- Run AFTER scripts/load_data.py has finished.
 
+-- scripts/init_db.py applies this whole file as a single transaction, and
+-- Supabase ships a 2 minute statement_timeout on the default role. Building
+-- twelve indexes plus refreshing the facet view over ~498k rows lands close
+-- enough to that ceiling that a cold instance can trip it and roll the entire
+-- file back. Raised for the duration of this transaction only; it does not
+-- affect the API's own sessions.
+SET statement_timeout = '30min';
+
 -- track.getsimilar / exact lookups: lower(track) is the selective side, the
 -- artist predicate then filters the handful of rows that come back.
 CREATE INDEX IF NOT EXISTS tracks_track_lower_idx  ON tracks (lower(track));
 CREATE INDEX IF NOT EXISTS tracks_artist_lower_idx ON tracks (lower(artist));
+
+-- The artist column holds a comma-separated list for collaborations, so the
+-- artist predicate is an OR: match the whole string, or match one member.
+-- PostgreSQL can only use indexes across an OR when *every* branch is
+-- indexable (it combines them under BitmapOr) — one unindexable branch forces
+-- a sequential scan for the whole predicate. The member branch used to be
+-- `= ANY(regexp_split_to_array(...))`, which is scalar-in-array and therefore
+-- unindexable, so it poisoned the OR and no artist lookup could use an index.
+-- Rewritten as `@> ARRAY[...]` (see _ARTIST_MATCH in muzikoo/repository.py),
+-- it is servable by this index and the OR becomes a BitmapOr of two.
+--
+-- This is what made the track.getsimilar reverse match expensive: that branch
+-- is genuinely unindexable (`:track ILIKE CONCAT('%', track, '%')` puts the
+-- column on the pattern side), but it never needed an index — one artist is a
+-- few hundred rows, and filtering those is free. It only cost 402 ms because
+-- the artist predicate could not narrow the scan first.
+CREATE INDEX IF NOT EXISTS tracks_artist_members_gin_idx
+    ON tracks USING GIN (regexp_split_to_array(lower(artist), '\s*,\s*'));
 
 -- track.search does substring matching (ILIKE '%...%'), which no btree index
 -- can serve. Trigram GIN indexes turn those full scans into index scans.

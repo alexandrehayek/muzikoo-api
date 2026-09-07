@@ -69,9 +69,15 @@ def _total_of(rows: Sequence[Row]) -> int:
 # The artist column holds a comma-separated list for collaborations
 # ("Michael Jackson,Akon,Mark \"Exit\" Goodchild"), so an exact match on the
 # whole string is not enough: also treat a match on any single member as a hit.
+#
+# Both branches have to be indexable or neither is used: PostgreSQL combines an
+# OR of index-servable branches under BitmapOr, but a single unindexable branch
+# forces a sequential scan of the whole predicate. Hence `@> ARRAY[...]`
+# (served by tracks_artist_members_gin_idx) rather than the equivalent
+# `= ANY(...)`, which is scalar-in-array and has no operator class.
 _ARTIST_MATCH = """
     (lower(artist) = lower(:artist)
-     OR lower(:artist) = ANY(regexp_split_to_array(lower(artist), '\\s*,\\s*')))
+     OR regexp_split_to_array(lower(artist), '\\s*,\\s*') @> ARRAY[lower(:artist)])
 """
 
 
@@ -105,9 +111,13 @@ def find_track(
     match exists the combined query would pick from that group anyway — but
     far cheaper. `:track ILIKE CONCAT('%', track, '%')` puts the column on the
     pattern side, so it cannot use an index, and OR-ing it in makes PostgreSQL
-    discard the trigram index for the whole predicate: 434 ms sequential scan
-    over 492,976 rows, against 21 ms for the indexed direct match. The scan is
-    now only paid on the rare query that has no direct match at all.
+    discard the trigram index for the whole predicate.
+
+    Neither statement needs an index on the track predicate, though. The
+    selective side is the artist — a few hundred rows — and once that narrows
+    the scan, matching `track` across them is free either way. What matters is
+    that _ARTIST_MATCH stays index-servable; when it was not, the reverse pass
+    was a 402 ms sequential scan over all 498k rows, against 1.2 ms now.
     """
     name = track.strip()
     params = {"track": name, "pattern": f"%{name}%", "artist": artist.strip()}
