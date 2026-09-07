@@ -53,11 +53,10 @@ _model_lock = Lock()
 def load_model_once() -> Any | None:
     """Return the artifact, loading it on first use.
 
-    Deliberately not lifespan-only: some ASGI hosts — Vercel's Python adapter
-    among them — do not run lifespan events, which would leave the model
-    permanently unloaded in production and every track.getsimilar answering
-    503. Lifespan below still warms this up when the host does support it, so
-    a local server pays the cost at boot rather than on the first request.
+    Not lifespan-only, so the model still loads under any ASGI host that skips
+    lifespan events. Lifespan below warms it up where supported (uvicorn
+    locally, and Vercel, which does run FastAPI lifespan events), so the cost
+    is paid at boot rather than on the first request that needs it.
     """
     if state["artifact"] is None and state["model_error"] is None:
         with _model_lock:

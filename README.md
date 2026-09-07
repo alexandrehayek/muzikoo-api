@@ -20,8 +20,8 @@ muzikoo-api/
 │   ├── errors.py             ApiError + last.fm-style error codes
 │   ├── security.py           api_key authentication (APIKeyQuery)
 │   └── api.py                FastAPI app, GET /v1 dispatcher
-├── api/index.py              Vercel entry point (exports the ASGI app)
-├── vercel.json               routing + function config
+├── app.py                    Vercel entrypoint (re-exports the ASGI app)
+├── vercel.json               function config (memory, duration, bundling)
 ├── scripts/
 │   ├── bootstrap_db.sh       create role + database, write .env  (superuser, once)
 │   ├── init_db.py            apply schema / indexes
@@ -421,8 +421,8 @@ Then, in the Vercel dashboard:
 2. On the **Configure Project** screen:
    | field | value |
    |---|---|
-   | Framework Preset | **Other** — there is no frontend framework to detect |
-   | Root Directory | `./` — `vercel.json`, `api/` and `requirements.txt` are at the repo root |
+   | Framework Preset | **FastAPI** — Vercel detects it from `requirements.txt`; picking *Other* skips the detection that finds the entrypoint |
+   | Root Directory | `./` — `app.py`, `vercel.json` and `requirements.txt` are at the repo root |
    | Build Command | leave empty — the Python runtime installs `requirements.txt` itself |
    | Output Directory | leave empty |
    | Install Command | leave empty |
@@ -468,8 +468,10 @@ the session pooler.
 
 What makes it work:
 
-* **`api/index.py`** exports the ASGI `app`; `vercel.json` rewrites every path
-  to it, so `/v1` and `/health` keep the URLs they have locally.
+* **`app.py` at the repo root re-exports the ASGI `app`.** Vercel looks for a
+  top-level `app` in `app.py` / `index.py` / `server.py` / `main.py` and routes
+  every request to it, so no rewrites are needed. An `api/index.py` is the
+  older `/api` routing mode and 404s under the current runtime.
 * **`DATABASE_URL` must be the transaction pooler (port 6543).** A serverless
   invocation is frozen between requests, so a pooled connection is unusable
   next time while still holding a slot on Supabase. The engine switches to
