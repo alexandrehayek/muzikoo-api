@@ -75,24 +75,61 @@ def find_track(
     include_lyrics: bool = False,
     engine: Engine | None = None,
 ) -> dict[str, Any] | None:
-    """Locate one track by exact (case-insensitive) name and artist.
+    """Locate one track by substring match on the name, plus the artist.
 
-    4,204 (artist, track) pairs appear more than once in the dataset, so the
-    tie is broken deterministically on popularity, then id.
+    Matching runs in both directions, so a caller does not have to know the
+    stored title exactly:
+
+    * **direct** — the stored title contains the query
+      ("yesterday" finds "Yesterday Once More");
+    * **reverse** — the query contains the stored title
+      ("Yesterday (Remastered 2009)" finds "Yesterday").
+
+    Direct matches are preferred, then ordered shortest-first: any direct match
+    is at least as long as the query, so the shortest one *is* the exact title
+    when it exists. Reverse matches are ordered longest-first instead, since the
+    longest stored title that still fits inside the query is the most specific.
+    Popularity and id break the remaining ties — 4,204 (artist, track) pairs
+    appear more than once, and equal titles have equal length, so without them
+    the pick would not be stable.
+
+    Run as two statements rather than one OR'd query, which is *the same
+    result* — a direct match always outranks a reverse one, so if any direct
+    match exists the combined query would pick from that group anyway — but
+    far cheaper. `:track ILIKE CONCAT('%', track, '%')` puts the column on the
+    pattern side, so it cannot use an index, and OR-ing it in makes PostgreSQL
+    discard the trigram index for the whole predicate: 434 ms sequential scan
+    over 492,976 rows, against 21 ms for the indexed direct match. The scan is
+    now only paid on the rare query that has no direct match at all.
     """
-    sql = text(
-        f"""
-        SELECT {_select_list(include_lyrics)}, count(*) OVER () AS _total
-        FROM tracks
-        WHERE lower(track) = lower(:track) AND {_ARTIST_MATCH}
-        ORDER BY popularity DESC NULLS LAST, id
-        LIMIT 1
-        """
-    )
+    name = track.strip()
+    params = {"track": name, "pattern": f"%{name}%", "artist": artist.strip()}
+
     with (engine or get_engine()).connect() as conn:
-        rows = conn.execute(sql, {"track": track.strip(), "artist": artist.strip()}).fetchall()
-    found = _rows_to_dicts(rows)
-    return found[0] if found else None
+        for match, order in (
+            # Shortest direct match first: any direct match is at least as long
+            # as the query, so the shortest is the exact title when it exists.
+            ("track ILIKE :pattern", "length(track) ASC"),
+            # Longest reverse match first: the longest stored title that still
+            # fits inside the query is the most specific one.
+            (":track ILIKE CONCAT('%', track, '%')", "length(track) DESC"),
+        ):
+            rows = conn.execute(
+                text(
+                    f"""
+                    SELECT {_select_list(include_lyrics)}, count(*) OVER () AS _total
+                    FROM tracks
+                    WHERE {match} AND {_ARTIST_MATCH}
+                    ORDER BY {order}, popularity DESC NULLS LAST, id
+                    LIMIT 1
+                    """
+                ),
+                params,
+            ).fetchall()
+            found = _rows_to_dicts(rows)
+            if found:
+                return found[0]
+    return None
 
 
 def fetch_tracks_by_ids(

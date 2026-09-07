@@ -55,6 +55,63 @@ def test_find_track_is_case_insensitive(any_track):
 
 
 @needs_db
+def test_find_track_direct_substring_match(any_track):
+    """A prefix of the stored title still locates it."""
+    title = any_track["track"]
+    if len(title) < 6:
+        pytest.skip("title too short to truncate meaningfully")
+    fragment = title[:-2]
+    found = repository.find_track(any_track["artist"], fragment)
+    assert found is not None
+    # The contract of a direct match: the stored title contains the query.
+    assert fragment.lower() in found["track"].lower()
+
+
+@needs_db
+def test_find_track_reverse_match_when_query_is_longer(any_track):
+    """A query carrying extra qualifiers still finds the plain title —
+    "<title> (Remastered 2009)" must resolve to "<title>"."""
+    decorated = f"{any_track['track']} (Remastered 2009)"
+    found = repository.find_track(any_track["artist"], decorated)
+    assert found is not None
+    assert found["track"].lower() in decorated.lower()
+
+
+@needs_db
+def test_find_track_prefers_the_exact_title_over_a_longer_one():
+    """Shortest-direct-match ordering means an exact title wins over titles
+    that merely contain it."""
+    rows, _ = repository.search_tracks("love", limit=200)
+    exact = next(
+        (
+            r
+            for r in rows
+            if r["track"].strip().lower() == "love"
+        ),
+        None,
+    )
+    if exact is None:
+        pytest.skip("no track titled exactly 'love' for these artists")
+    found = repository.find_track(exact["artist"], "love")
+    assert found["track"].strip().lower() == "love"
+
+
+@needs_db
+def test_find_track_is_deterministic_for_duplicated_pairs():
+    """4,204 (artist, track) pairs repeat; the same query must always return
+    the same row."""
+    picks = {
+        repository.find_track("Adele", "Rolling in the Deep")["id"] for _ in range(5)
+    }
+    assert len(picks) == 1
+
+
+@needs_db
+def test_find_track_still_returns_none_for_nonsense():
+    assert repository.find_track("zzz-no-artist-zzz", "zzz-no-track-zzz") is None
+
+
+@needs_db
 def test_find_track_matches_one_member_of_a_collaboration():
     """artist holds "A,B,C" for collaborations; querying just "B" must match."""
     candidates, _ = repository.search_tracks("a", limit=200)
