@@ -296,6 +296,39 @@ pooling.
 | server | uvicorn (`make api`) | Vercel's ASGI runtime |
 | SQLAlchemy pool | 5 connections | `NullPool` |
 
+### 0. Get the connection strings
+
+Supabase dashboard → **Connect** button at the top of the project page. It
+offers three strings that differ only in host, port and username:
+
+| shown as | string | use it for |
+|---|---|---|
+| Direct connection | `postgresql://postgres:[PASSWORD]@db.<ref>.supabase.co:5432/postgres` | migrations, if you have IPv6 or the IPv4 add-on |
+| **Session pooler** | `postgresql://postgres.<ref>:[PASSWORD]@aws-<region>.pooler.supabase.com:5432/postgres` | **`SUPABASE_DB_URL`** — the restore |
+| Transaction pooler | `postgresql://postgres.<ref>:[PASSWORD]@aws-<region>.pooler.supabase.com:6543/postgres` | **`DATABASE_URL`** — the deployed API |
+
+Three things to watch:
+
+* **The pooler username is `postgres.<project-ref>`, not `postgres`.** Only the
+  direct connection uses a bare `postgres`. Mixing them up gives an
+  authentication failure that looks like a wrong password.
+* **`[YOUR-PASSWORD]` is a placeholder** — the dashboard never shows the
+  password again. If you do not have it: Project Settings → Database → Reset
+  database password.
+* **Percent-encode special characters in the password.** It sits in the
+  userinfo part of a URL, so `@ : / ? # [ ] %` break parsing.
+  `python3 -c "import urllib.parse,sys; print(urllib.parse.quote(sys.argv[1], safe=''))" '<password>'`
+  gives the safe form. Wrap the whole URL in single quotes so the shell does
+  not eat `$` or `!` either.
+
+Before restoring, enable the extension the search indexes need — Database →
+Extensions → search `pg_trgm` → enable — then check the string works:
+
+```bash
+export SUPABASE_DB_URL='postgresql://postgres.<ref>:<password>@aws-<region>.pooler.supabase.com:5432/postgres'
+psql "$SUPABASE_DB_URL" -c 'select version()'
+```
+
 ### 1. Move the database to Supabase
 
 The dump is taken locally and restored onto Supabase.

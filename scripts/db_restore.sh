@@ -49,4 +49,7 @@ pg_restore \
     --jobs=4 \
     "$DUMP"
 
-echo ">> restored. verify with: DATABASE_URL='<transaction pooler url>' make health-prod"
+# Verify through the transaction pooler, not the session one used above: that
+# is the connection the deployed API will actually use.
+echo ">> restored. verify with:"
+echo "   DATABASE_URL='<transaction pooler url, port 6543>' make prod-check"

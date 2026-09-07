@@ -51,7 +51,10 @@ db-push-slim: ## copy to Supabase without lyrics, to fit the 500 MB free tier
 	./scripts/db_push_slim.sh
 
 prod-check: ## verify DATABASE_URL points at a usable database
-	@DATABASE_URL="$(DATABASE_URL)" $(PY) scripts/check_prod.py
+	# DATABASE_URL is inherited from the environment, deliberately not re-passed
+	# as DATABASE_URL="$$(DATABASE_URL)": make would expand a `$` in the
+	# password and hand the shell a truncated connection string.
+	@$(PY) scripts/check_prod.py
 
 reset: ## drop and recreate the table (destroys all loaded data)
 	$(PY) scripts/init_db.py --stage schema --drop
