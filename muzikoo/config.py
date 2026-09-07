@@ -79,6 +79,7 @@ class Settings:
             k.strip() for k in os.getenv("API_KEYS", "").split(",") if k.strip()
         )
     )
+    # Allowed browser origins. Empty means "*" (see muzikoo.api).
     cors_origins: tuple[str, ...] = field(
         default_factory=lambda: tuple(
             o.strip() for o in os.getenv("CORS_ORIGINS", "").split(",") if o.strip()

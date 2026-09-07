@@ -86,13 +86,13 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
-if settings.cors_origins:
-    app.add_middleware(
-        CORSMiddleware,
-        allow_origins=list(settings.cors_origins),
-        allow_methods=["GET"],
-        allow_headers=["*"],
-    )
+# CORS is always enabled; an empty CORS_ORIGINS means "*".
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=list(settings.cors_origins) or ["*"],
+    allow_methods=["GET"],
+    allow_headers=["*"],
+)
 
 
 @app.exception_handler(ApiError)
