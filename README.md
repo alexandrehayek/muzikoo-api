@@ -34,7 +34,7 @@ muzikoo-api/
 ├── sql/
 │   ├── 000_bootstrap.sql     role + database + pg_trgm
 │   ├── 001_schema.sql        tracks table
-│   └── 002_indexes.sql       indexes (built after the load)
+│   └── 002_indexes.sql       indexes + facet counts (built after the load)
 ├── tests/                    unit (no DB) + integration (auto-skipped)
 ├── data/dataset.json         1.3 GB, JSON Lines, gitignored
 └── models/knn_model.joblib   trained artifact

@@ -306,3 +306,76 @@ def test_getsimilar_defaults_to_50(client, any_track):
     )
     assert r.json()["limit"] == 50
     assert len(r.json()["tracks"]) == 50
+
+
+# --------------------------------------------------------------------------
+# query plans
+# --------------------------------------------------------------------------
+# byemotion and bestfor are the only two methods that filter on a
+# low-cardinality column, so they are the only two where the planner has a
+# credible sequential scan to fall back to — and it will, silently, if the
+# index stops matching the query. That regression cost 703 ms and 612 MB of
+# buffers per request while every functional test above still passed, so it is
+# asserted on the plan rather than on the response.
+def _plan_for(sql, params) -> str:
+    from sqlalchemy import text
+
+    from muzikoo.db import get_engine
+
+    with get_engine().connect() as conn:
+        rows = conn.execute(text(f"EXPLAIN {sql}"), params).fetchall()
+    return "\n".join(r[0] for r in rows)
+
+
+@needs_db
+@pytest.mark.parametrize("emotion", EMOTIONS)
+def test_byemotion_page_is_served_by_an_index_scan(emotion):
+    plan = _plan_for(
+        f"SELECT {repository._select_list(False)}, {repository._FACET_TOTAL} FROM tracks "
+        "WHERE lower(emotion) = lower(:emotion) "
+        "ORDER BY popularity DESC NULLS LAST, id LIMIT :limit OFFSET :offset",
+        {"emotion": emotion, "facet": "emotion", "facet_value": emotion, "limit": 50, "offset": 0},
+    )
+    assert "Seq Scan on tracks" not in plan, plan
+    assert "tracks_emotion_pop_id_idx" in plan, plan
+    # The index supplies the ordering; a Sort node means it no longer matches.
+    assert "Sort Key" not in plan, plan
+
+
+@needs_db
+@pytest.mark.parametrize("action", BEST_FOR_LABELS)
+def test_bestfor_page_is_served_by_an_index_scan(action):
+    plan = _plan_for(
+        f"SELECT {repository._select_list(False)}, {repository._FACET_TOTAL} FROM tracks "
+        "WHERE string_to_array(best_for, ',') @> ARRAY[:action] "
+        "ORDER BY popularity DESC NULLS LAST, id LIMIT :limit OFFSET :offset",
+        {"action": action, "facet": "best_for", "facet_value": action, "limit": 50, "offset": 0},
+    )
+    assert "Seq Scan on tracks" not in plan, plan
+    assert f"tracks_best_for_{action}_pop_idx" in plan, plan
+    assert "Sort Key" not in plan, plan
+
+
+@needs_db
+@pytest.mark.parametrize("method,param,values", [
+    ("track.byemotion", "emotion", EMOTIONS),
+    ("track.bestfor", "action", BEST_FOR_LABELS),
+])
+def test_facet_totals_match_a_live_count(client, method, param, values):
+    """track_facet_counts must agree with the table it summarises.
+
+    `totalresults` is read from a materialized view, so a stale view would be
+    invisible in every other test: the rows would still be right.
+    """
+    from sqlalchemy import text
+
+    from muzikoo.db import get_engine
+
+    for value in values:
+        reported = client.get("/v1", params={"method": method, param: value}).json()["totalresults"]
+        column = "lower(emotion) = :v" if param == "emotion" else "string_to_array(best_for, ',') @> ARRAY[:v]"
+        with get_engine().connect() as conn:
+            actual = conn.execute(
+                text(f"SELECT count(*) FROM tracks WHERE {column}"), {"v": value}
+            ).scalar_one()
+        assert reported == actual, f"{method}={value}"

@@ -1,8 +1,15 @@
 """SQL queries behind the four API methods.
 
-Every result set is paginated in SQL and carries its own total, obtained with
-``count(*) OVER ()`` so that "one page of rows" and "how many rows in total"
-cost a single round trip instead of two.
+Every result set is paginated in SQL and carries its own total, so that "one
+page of rows" and "how many rows in total" cost a single round trip instead of
+two. Where the total comes from depends on how expensive it is to count:
+
+* ``count(*) OVER ()`` for the substring searches, whose match sets are small
+  and whose size is not known ahead of time;
+* a lookup in ``track_facet_counts`` for the two fixed-vocabulary filters
+  (emotion, best_for), whose match sets run to six figures. The window function
+  has to consume every matching row before it can emit the first one, which
+  cancels the LIMIT — see sql/002_indexes.sql.
 """
 
 from __future__ import annotations
@@ -117,7 +124,7 @@ def find_track(
             rows = conn.execute(
                 text(
                     f"""
-                    SELECT {_select_list(include_lyrics)}, count(*) OVER () AS _total
+                    SELECT {_select_list(include_lyrics)}
                     FROM tracks
                     WHERE {match} AND {_ARTIST_MATCH}
                     ORDER BY {order}, popularity DESC NULLS LAST, id
@@ -147,7 +154,7 @@ def fetch_tracks_by_ids(
         return {}
     sql = text(
         f"""
-        SELECT {_select_list(include_lyrics)}, 0 AS _total
+        SELECT {_select_list(include_lyrics)}
         FROM tracks
         WHERE id = ANY(:ids)
         """
@@ -199,6 +206,15 @@ def search_tracks(
     return _rows_to_dicts(rows), _total_of(rows)
 
 
+# Total for a fixed-vocabulary facet, as a scalar subquery so it travels with
+# the page instead of costing a second round trip. COALESCE covers the case
+# where the view has not been refreshed since a value first appeared.
+_FACET_TOTAL = """
+    COALESCE((SELECT n FROM track_facet_counts
+               WHERE facet = :facet AND value = :facet_value), 0) AS _total
+"""
+
+
 def tracks_by_emotion(
     emotion: str,
     *,
@@ -207,9 +223,17 @@ def tracks_by_emotion(
     include_lyrics: bool = False,
     engine: Engine | None = None,
 ) -> tuple[list[dict[str, Any]], int]:
+    """Tracks with the given emotion, most popular first.
+
+    The ORDER BY is spelled to match tracks_emotion_pop_id_idx exactly, so the
+    index supplies the ordering and the scan stops after `limit` rows. Changing
+    the direction, the NULLS placement or the tie-breaker here without changing
+    the index turns this back into a full-table sort.
+    """
+    value = emotion.strip()
     sql = text(
         f"""
-        SELECT {_select_list(include_lyrics)}, count(*) OVER () AS _total
+        SELECT {_select_list(include_lyrics)}, {_FACET_TOTAL}
         FROM tracks
         WHERE lower(emotion) = lower(:emotion)
         ORDER BY popularity DESC NULLS LAST, id
@@ -218,7 +242,14 @@ def tracks_by_emotion(
     )
     with (engine or get_engine()).connect() as conn:
         rows = conn.execute(
-            sql, {"emotion": emotion.strip(), "limit": limit, "offset": offset}
+            sql,
+            {
+                "emotion": value,
+                "facet": "emotion",
+                "facet_value": value.lower(),
+                "limit": limit,
+                "offset": offset,
+            },
         ).fetchall()
     return _rows_to_dicts(rows), _total_of(rows)
 
@@ -235,19 +266,32 @@ def tracks_best_for(
 
     Exact membership in the comma-separated list, not a LIKE on the string, so
     a label can never match a fragment of another one.
+
+    Phrased as `@> ARRAY[...]` rather than the equivalent
+    `... = ANY(string_to_array(...))`, because only the array-containment
+    operator is indexable: `= ANY(...)` is scalar-in-array, which no GIN
+    operator class implements, so it silently sequential-scanned all 498k rows.
     """
+    value = action.strip().lower()
     sql = text(
         f"""
-        SELECT {_select_list(include_lyrics)}, count(*) OVER () AS _total
+        SELECT {_select_list(include_lyrics)}, {_FACET_TOTAL}
         FROM tracks
-        WHERE lower(:action) = ANY(string_to_array(best_for, ','))
+        WHERE string_to_array(best_for, ',') @> ARRAY[:action]
         ORDER BY popularity DESC NULLS LAST, id
         LIMIT :limit OFFSET :offset
         """
     )
     with (engine or get_engine()).connect() as conn:
         rows = conn.execute(
-            sql, {"action": action.strip(), "limit": limit, "offset": offset}
+            sql,
+            {
+                "action": value,
+                "facet": "best_for",
+                "facet_value": value,
+                "limit": limit,
+                "offset": offset,
+            },
         ).fetchall()
     return _rows_to_dicts(rows), _total_of(rows)
 
