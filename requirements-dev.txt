@@ -1,4 +1,10 @@
 -r requirements.txt
 
+# Server: only needed locally. On Vercel the platform provides the ASGI server,
+# and uvicorn[standard] would add ~20 MB (uvloop, httptools, watchfiles) to the
+# function bundle for nothing.
+uvicorn[standard]==0.52.4
+
+# Tests
 httpx==0.28.1
 pytest==9.1.1

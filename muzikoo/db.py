@@ -15,20 +15,41 @@ from typing import Iterator
 
 import psycopg2
 from sqlalchemy import Engine, create_engine, text
+from sqlalchemy.pool import NullPool
 
 from .config import get_settings
 
 
 @lru_cache(maxsize=1)
 def get_engine() -> Engine:
+    """Process-wide engine.
+
+    Pooling differs by environment on purpose:
+
+    * local — a small pool, reused across requests by a long-lived process.
+    * serverless — NullPool. A Vercel container is frozen between invocations,
+      so a pooled connection is not reusable but still occupies a slot on
+      Supabase's side; and Supabase's transaction-mode pooler (port 6543)
+      hands out a different backend per transaction anyway, which makes
+      client-side pooling both useless and a way to exhaust connections.
+    """
     settings = get_settings()
-    return create_engine(
-        settings.database_url,
-        pool_pre_ping=True,
-        pool_size=5,
-        max_overflow=5,
-        future=True,
-    )
+    kwargs: dict[str, object] = {"future": True, "pool_pre_ping": True}
+
+    if settings.is_serverless:
+        kwargs["poolclass"] = NullPool
+        kwargs.pop("pool_pre_ping")  # nothing is pooled, so nothing to pre-ping
+    else:
+        kwargs["pool_size"] = 5
+        kwargs["max_overflow"] = 5
+
+    # Supabase requires TLS. psycopg2 defaults to sslmode=prefer, which would
+    # silently accept a plaintext connection; require it unless the URL already
+    # says otherwise.
+    if settings.is_production and "sslmode=" not in settings.database_url:
+        kwargs["connect_args"] = {"sslmode": "require"}
+
+    return create_engine(settings.database_url, **kwargs)
 
 
 @contextmanager

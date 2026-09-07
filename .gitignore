@@ -5,8 +5,16 @@
 data/*.json
 !data/dataset-sample.json
 
-# Trained model artifacts
-models/*.joblib
+# Database dumps produced by `make db-dump`
+dumps/
+
+# NOTE: models/knn_model.joblib is intentionally NOT ignored. Vercel builds
+# from the git repository, so the trained artifact has to be committed for
+# track.getsimilar to work in production (~23 MB; use Git LFS if the retrain
+# cadence makes that history painful).
+
+# Vercel CLI
+.vercel/
 
 # Python
 .venv/

@@ -11,6 +11,7 @@ Every /v1 request needs a valid `api_key` query parameter; see muzikoo.security.
 from __future__ import annotations
 
 from contextlib import asynccontextmanager
+from threading import Lock
 from typing import Annotated, Any
 
 from fastapi import Depends, FastAPI, Query, Request
@@ -39,20 +40,41 @@ from .transform import BEST_FOR_LABELS, EMOTIONS
 METHODS = ("track.getsimilar", "track.search", "track.byemotion", "track.bestfor")
 
 
-# Loaded once at startup rather than per request: the artifact carries a fitted
-# neighbour index over ~498k tracks and rebuilding or re-reading it per call
-# would dominate the response time.
+# Loaded once per process rather than per request: the artifact carries a
+# fitted neighbour index over ~498k tracks, so re-reading it per call would
+# dominate the response time.
 state: dict[str, Any] = {"artifact": None, "model_error": None}
+
+# Sync endpoints run in a threadpool, so two concurrent first-requests could
+# otherwise both pay the ~23 MB load.
+_model_lock = Lock()
+
+
+def load_model_once() -> Any | None:
+    """Return the artifact, loading it on first use.
+
+    Deliberately not lifespan-only: some ASGI hosts — Vercel's Python adapter
+    among them — do not run lifespan events, which would leave the model
+    permanently unloaded in production and every track.getsimilar answering
+    503. Lifespan below still warms this up when the host does support it, so
+    a local server pays the cost at boot rather than on the first request.
+    """
+    if state["artifact"] is None and state["model_error"] is None:
+        with _model_lock:
+            if state["artifact"] is None and state["model_error"] is None:
+                try:
+                    state["artifact"] = recommender.load()
+                except Exception as exc:  # noqa: BLE001 — other methods must still serve
+                    state["model_error"] = str(exc)
+    return state["artifact"]
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    try:
-        state["artifact"] = recommender.load()
-    except Exception as exc:  # noqa: BLE001 — API must still serve the other methods
-        state["model_error"] = str(exc)
+    load_model_once()
     yield
-    state.clear()
+    # Reset rather than clear(), so the keys still exist if the app is reused.
+    state.update(artifact=None, model_error=None)
 
 
 settings = get_settings()
@@ -102,7 +124,7 @@ def _paging(limit: int | None, page: int | None) -> tuple[int, int, int]:
 
 
 def _artifact() -> recommender.RecommenderArtifact:
-    artifact = state.get("artifact")
+    artifact = load_model_once()
     if artifact is None:
         raise ApiError(
             503,
@@ -252,7 +274,7 @@ def _best_for(
 def health() -> dict[str, Any]:
     from .db import count_tracks
 
-    artifact = state.get("artifact")
+    artifact = load_model_once()
     try:
         tracks = count_tracks()
         database = "ok"
@@ -261,6 +283,7 @@ def health() -> dict[str, Any]:
 
     return {
         "status": "ok" if database == "ok" and artifact is not None else "degraded",
+        "environment": "production" if settings.is_production else "development",
         "database": database,
         "tracks": tracks,
         # Count only — never the keys themselves. Unauthenticated on purpose,

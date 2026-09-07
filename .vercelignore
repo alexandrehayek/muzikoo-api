@@ -1,0 +1,20 @@
+# Keep the deployment bundle small. models/ is NOT listed here — the trained
+# artifact has to ship for track.getsimilar to work.
+
+# 1.3 GB of source data; only the loader needs it, and the loader runs locally.
+data/
+
+# Local-only tooling
+.venv/
+tests/
+scripts/
+sql/
+Makefile
+requirements-dev.txt
+*.ipynb
+.pytest_cache/
+__pycache__/
+*.py[cod]
+
+# Never ship secrets: Vercel injects env vars from project settings instead.
+.env

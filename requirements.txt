@@ -1,6 +1,8 @@
+# Production runtime — this is what Vercel installs.
+# Local development additionally needs requirements-dev.txt (uvicorn, pytest).
+
 # --- API -------------------------------------------------------------------
 fastapi==0.141.1
-uvicorn[standard]==0.52.4
 pydantic==2.10.6
 
 # --- Database --------------------------------------------------------------
@@ -8,7 +10,10 @@ SQLAlchemy==2.0.52
 psycopg2-binary==2.9.12
 python-dotenv==1.2.3
 
-# --- Model / data ----------------------------------------------------------
+# --- Model inference -------------------------------------------------------
+# sklearn and pandas are needed at request time, not just for training:
+# unpickling the artifact reconstructs MinMaxScaler/NearestNeighbors, and the
+# scaler was fitted with set_output(transform="pandas").
 scikit-learn==1.6.1
 pandas==2.2.3
 numpy==1.26.4
