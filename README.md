@@ -403,6 +403,48 @@ schema scripts rather than a dump.
 
 ### 2. Deploy to Vercel
 
+#### Option A — import the GitHub repository (dashboard)
+
+First make sure the trained model is in the repository. Vercel builds from git,
+so an artifact that only exists locally means `track.getsimilar` answers 503 in
+production:
+
+```bash
+git ls-files --error-unmatch models/knn_model.joblib   # must print the path
+git push -u origin main
+```
+
+Then, in the Vercel dashboard:
+
+1. **Add New… → Project → Import Git Repository.** If the repo is not listed,
+   use *Adjust GitHub App Permissions* to grant Vercel access to it.
+2. On the **Configure Project** screen:
+   | field | value |
+   |---|---|
+   | Framework Preset | **Other** — there is no frontend framework to detect |
+   | Root Directory | `./` — `vercel.json`, `api/` and `requirements.txt` are at the repo root |
+   | Build Command | leave empty — the Python runtime installs `requirements.txt` itself |
+   | Output Directory | leave empty |
+   | Install Command | leave empty |
+3. Expand **Environment Variables** and add both *before* the first deploy:
+   | name | value |
+   |---|---|
+   | `DATABASE_URL` | the Supabase **transaction pooler** URL, port 6543 |
+   | `API_KEYS` | your API key, or several comma-separated |
+4. **Deploy.**
+
+Then set the function region close to your Supabase region — Settings →
+Functions → Function Region. Left on a US default with a European database,
+every query pays a cross-Atlantic round trip.
+
+Afterwards, every push to `main` redeploys, and other branches get Preview
+deployments. Preview uses its own copy of the environment variables, so tick
+**Preview** as well when adding them (or previews will answer 503 for a missing
+`API_KEYS`). Changing a variable does not affect running deployments — redeploy
+from Deployments → ⋯ → Redeploy.
+
+#### Option B — CLI
+
 ```bash
 npm i -g vercel
 vercel link
@@ -411,12 +453,18 @@ vercel env add API_KEYS production
 vercel --prod
 ```
 
-Then:
+#### Verify
 
 ```bash
 curl "https://<your-deployment>.vercel.app/health"
 curl "https://<your-deployment>.vercel.app/v1?method=track.byemotion&emotion=joy&api_key=YOUR_API_KEY"
 ```
+
+`/health` needs no key and reports what to check first:
+`"environment": "production"`, `"database": "ok"`, a non-zero `tracks`, and
+`"model": {"loaded": true}`. If `model.loaded` is false, the artifact did not
+ship; if `database` shows an error, `DATABASE_URL` is wrong or still points at
+the session pooler.
 
 What makes it work:
 
